@@ -1,0 +1,9 @@
+[toolchain]
+# mipsel-sony-psx is a tier 3 target: it needs nightly for build-std and MIPS
+# inline assembly. Bump deliberately, after checking the hazard scan still passes.
+# Needs LLVM 22.1.5 or newer: older versions can hoist a load into a branch
+# delay slot (rust-lang/rust#150676) unless built with
+# -Cllvm-args=-disable-mips-df-backward-search.
+channel = "nightly-2026-09-29"
+components = ["rust-src", "rustfmt", "clippy"]
+profile = "minimal"

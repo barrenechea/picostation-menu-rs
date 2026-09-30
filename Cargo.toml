@@ -1,0 +1,24 @@
+[package]
+name = "picostation-menu"
+version = "1.0.0"
+edition = "2024"
+description = "PicoStation menu disc, a Rust port of picostation-menu"
+license = "Apache-2.0"
+repository = "https://github.com/barrenechea/picostation-menu-rs"
+publish = false
+
+[[bin]]
+name = "picostation-menu"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "s"
+panic = "abort"

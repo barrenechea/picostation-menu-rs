@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- mkpsxiso script, configured by CMakeLists.txt into the build directory.
+     The layout matches menu/assets/xiso/isoconfig.xml.in. -->
+
+<iso_project image_name="picostation-menu.bin" cue_sheet="picostation-menu.cue">
+    <track type="data">
+        <identifiers
+            system          ="PLAYSTATION"
+            application     ="PLAYSTATION"
+            volume          ="PICO"
+            volume_set      ="PICO"
+            publisher       ="EQUINOX"
+            data_preparer   ="MKPSXISO"
+        />
+
+        <license file="@XISO_DIR@/LICENSEJ.DAT"/>
+
+        <directory_tree>
+            <file name="system.cnf"  type="data" source="@XISO_DIR@/system.cnf"/>
+            <file name="SCES_313.37" type="data" source="@PSEXE_PATH@"/>
+            <file name="PICO.DAT"    type="data" source="@XISO_DIR@/PICO.DAT"/>
+            <dummy sectors="16"/>
+        </directory_tree>
+    </track>
+</iso_project>
