@@ -16,6 +16,7 @@ const BIOS_SHELL_LOAD_ADDR: usize = 0x8003_0000;
 const BIOS_BREAK_VECTOR: usize = 0x8000_0040;
 const BIOS_EXC_VECTOR: usize = 0x8000_0080;
 const BIOS_SIGNATURE: usize = 0xbfc0_0108;
+const BIOS_VERSION_STRING: usize = 0xbfc7_ff32;
 
 pub type ArgFunction = unsafe extern "C" fn(arg: *mut c_void);
 
@@ -327,6 +328,29 @@ pub fn disable_interrupts() -> bool {
 
     cop0::set_reg::<COP0_STATUS>(status & !COP0_STATUS_IEC);
     status & COP0_STATUS_IEC != 0
+}
+
+/// Whether the BIOS is a PAL one. Every version but v1.0 has a version string
+/// ending in its region letter, which the v4.x shell also picks PAL or NTSC by.
+pub fn bios_is_pal() -> bool {
+    let prefix = b"System ROM Version ";
+    let version = ptr::without_provenance::<u8>(BIOS_VERSION_STRING);
+    let read = |i: usize| unsafe { ptr::read_volatile(version.wrapping_add(i)) };
+
+    if prefix.iter().enumerate().any(|(i, &byte)| read(i) != byte) {
+        return false;
+    }
+
+    let mut last = 0;
+
+    for i in prefix.len()..48 {
+        match read(i) {
+            0 => break,
+            byte => last = byte,
+        }
+    }
+
+    last == b'E'
 }
 
 pub fn soft_reset() -> ! {

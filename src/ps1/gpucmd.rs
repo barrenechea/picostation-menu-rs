@@ -66,9 +66,11 @@ const GP0_CMD_ATTRIBUTE: u32 = 7 << 29;
 const GP0_CMD_VRAM_FILL: u32 = GP0_CMD_MISC | (2 << 24);
 
 const GP0_CMD_TEXPAGE: u32 = GP0_CMD_ATTRIBUTE | (1 << 24);
+const GP0_CMD_TEX_WINDOW: u32 = GP0_CMD_ATTRIBUTE | (2 << 24);
 const GP0_CMD_FB_OFFSET1: u32 = GP0_CMD_ATTRIBUTE | (3 << 24);
 const GP0_CMD_FB_OFFSET2: u32 = GP0_CMD_ATTRIBUTE | (4 << 24);
 const GP0_CMD_FB_ORIGIN: u32 = GP0_CMD_ATTRIBUTE | (5 << 24);
+const GP0_CMD_FB_MASK: u32 = GP0_CMD_ATTRIBUTE | (6 << 24);
 
 const fn gp0_polygon(
     quad: bool,
@@ -108,6 +110,14 @@ pub const fn gp0_texpage(page: u16, dither: bool, unlock_fb: bool) -> u32 {
     GP0_CMD_TEXPAGE | (page as u32 & 0x9ff) | ((dither as u32) << 9) | ((unlock_fb as u32) << 10)
 }
 
+pub const fn gp0_tex_window_off() -> u32 {
+    GP0_CMD_TEX_WINDOW
+}
+
+pub const fn gp0_mask_off() -> u32 {
+    GP0_CMD_FB_MASK
+}
+
 pub const fn gp0_fb_offset1(x: u32, y: u32) -> u32 {
     GP0_CMD_FB_OFFSET1 | (x & 0x3ff) | ((y & 0x3ff) << 10)
 }
@@ -124,12 +134,13 @@ pub const fn gp0_fb_origin(x: i32, y: i32) -> u32 {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Gp1HorizontalRes {
-    Res320 = 1 << 0,
+    Res640 = 3,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Gp1VerticalRes {
-    Res256 = 0,
+    /// Only takes effect in interlaced mode.
+    Res480 = 1,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,6 +154,7 @@ pub const GP1_COLOR_16BPP: u32 = 0;
 pub const GP1_DREQ_GP0_WRITE: u32 = 2;
 
 const GP1_CMD_RESET_GPU: u32 = 0 << 24;
+const GP1_CMD_RESET_FIFO: u32 = 1 << 24;
 const GP1_CMD_DISP_BLANK: u32 = 3 << 24;
 const GP1_CMD_DREQ_MODE: u32 = 4 << 24;
 const GP1_CMD_FB_OFFSET: u32 = 5 << 24;
@@ -150,20 +162,12 @@ const GP1_CMD_FB_RANGE_H: u32 = 6 << 24;
 const GP1_CMD_FB_RANGE_V: u32 = 7 << 24;
 const GP1_CMD_FB_MODE: u32 = 8 << 24;
 
-pub const fn gp1_clock_multiplier_h(horizontal_res: Gp1HorizontalRes) -> u32 {
-    match horizontal_res {
-        Gp1HorizontalRes::Res320 => 8,
-    }
-}
-
-pub const fn gp1_clock_divider_v(vertical_res: Gp1VerticalRes) -> u32 {
-    match vertical_res {
-        Gp1VerticalRes::Res256 => 1,
-    }
-}
-
 pub const fn gp1_reset_gpu() -> u32 {
     GP1_CMD_RESET_GPU
+}
+
+pub const fn gp1_reset_fifo() -> u32 {
+    GP1_CMD_RESET_FIFO
 }
 
 pub const fn gp1_disp_blank(blank: bool) -> u32 {

@@ -182,8 +182,10 @@ pub const CDROM_ADPCTL: Reg<u8> = Reg::at(IO_BASE | 0x803); // Bank 3
 
 /* GPU */
 
-pub const GP1_STAT_FB_MODE_BITMASK: u32 = 1 << 20;
+/// Bits 16-22 mirror the display mode set by GP1(08h), in a different order.
+pub const GP1_STAT_FB_MODE_BITMASK: u32 = 0x7f << 16;
 pub const GP1_STAT_FB_MODE_PAL: u32 = 1 << 20;
+pub const GP1_STAT_DISP_BLANK: u32 = 1 << 23;
 pub const GP1_STAT_CMD_READY: u32 = 1 << 26;
 
 pub const GPU_GP0: Reg<u32> = Reg::at(IO_BASE | 0x810);

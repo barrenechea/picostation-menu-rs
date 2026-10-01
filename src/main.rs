@@ -25,6 +25,7 @@ mod cell;
 mod controller;
 mod cstr;
 mod file_manager;
+mod font;
 mod gpu;
 mod ps1;
 mod psxproject;
@@ -37,6 +38,7 @@ use cell::StaticCell;
 use controller::*;
 use cstr::{strncmp, until_nul};
 use file_manager::{FileManager, MAX_FILE_ITEMS};
+use font::{Font, ICON_DISC, ICON_FOLDER, LINE_HEIGHT};
 use gpu::*;
 use ps1::cdrom::{CDROM_CMD_TEST, CDROM_TEST_DSP_CMD};
 use ps1::gpucmd::*;
@@ -46,9 +48,9 @@ use psxproject::cdrom::{
 };
 use psxproject::delay::delay_microseconds;
 use psxproject::filesystem::{Sector, file_load, init_filesystem};
-use psxproject::irq::{init_irq, wait_for_vblank};
+use psxproject::irq::init_irq;
 use psxproject::spu::{init_spu, sound_load_sound_from_binary, sound_play_on_channel};
-use psxproject::system::{soft_fast_reboot, soft_reset};
+use psxproject::system::{bios_is_pal, soft_fast_reboot, soft_reset};
 use text::TextBuffer;
 
 /// Size of a directory listing returned by the PicoStation, which follows the
@@ -58,20 +60,28 @@ const MAX_FILES: usize = MAX_FILE_ITEMS;
 
 const SFX_VOL: u16 = 10922; // 2/3 of maximal volume
 
-const SCREEN_WIDTH: i32 = 320;
-const SCREEN_HEIGHT: i32 = 240;
-const FONT_WIDTH: i32 = 96;
-const FONT_HEIGHT: i32 = 84;
-const TEXTURE_WIDTH: i32 = 128;
-const TEXTURE_HEIGHT: i32 = 20;
+const LOGO_WIDTH: i32 = 128;
+const LOGO_HEIGHT: i32 = 20;
+/// A line clear of the logo, so its edge texels stay transparent.
+const LOGO_PALETTE_Y: i32 = LOGO_HEIGHT + 1;
+/// The logo was drawn for a 320x240 screen.
+const LOGO_SCALE: i32 = 2;
 
-const FONT_FIRST_TABLE_CHAR: u8 = b'!';
-const FONT_INVALID_CHAR: u8 = 0x7f;
-const FONT_SPACE_WIDTH: i32 = 4;
-const FONT_TAB_WIDTH: i32 = 32;
-const FONT_LINE_HEIGHT: i32 = 10;
+// Layout, in pixels of the 640x480 screen. TVs crop about 16 lines off the
+// top and the bottom.
 
-const PAGE_SIZE: u16 = 16;
+const BACKGROUND_COLOR: u32 = gp0_rgb(64, 64, 64);
+const MARGIN_X: i32 = 32;
+const LOGO_Y: i32 = 20;
+const COUNTER_Y: i32 = 32;
+const MESSAGE_X: i32 = 80;
+const LIST_Y: i32 = 76;
+const FOOTER_X: i32 = 24;
+const FOOTER_Y: i32 = 440;
+const CREDITS_TITLE_Y: i32 = 96;
+const CREDITS_SCROLL_Y: i32 = 240;
+
+const PAGE_SIZE: u16 = 22;
 
 /* Commands understood by the PicoStation firmware */
 
@@ -93,147 +103,6 @@ enum MenuCommand {
     Bootloader,
 }
 
-/// Position and size of a character within the font spritesheet.
-#[derive(Clone, Copy)]
-struct SpriteInfo {
-    x: u8,
-    y: u8,
-    width: u8,
-    height: u8,
-}
-
-const fn sprite(x: u8, y: u8, width: u8, height: u8) -> SpriteInfo {
-    SpriteInfo {
-        x,
-        y,
-        width,
-        height,
-    }
-}
-
-/// Characters from '!' onwards, in ASCII order, followed by the "invalid
-/// character" box at 0x7f and the button icons.
-static FONT_SPRITES: [SpriteInfo; 118] = [
-    sprite(6, 0, 2, 9),     // !
-    sprite(12, 0, 4, 9),    // "
-    sprite(18, 0, 6, 9),    // #
-    sprite(24, 0, 6, 9),    // $
-    sprite(30, 0, 6, 9),    // %
-    sprite(36, 0, 6, 9),    // &
-    sprite(42, 0, 2, 9),    // '
-    sprite(48, 0, 3, 9),    // (
-    sprite(54, 0, 3, 9),    // )
-    sprite(60, 0, 4, 9),    // *
-    sprite(66, 0, 6, 9),    // +
-    sprite(72, 0, 3, 9),    // ,
-    sprite(78, 0, 6, 9),    // -
-    sprite(84, 0, 2, 9),    // .
-    sprite(90, 0, 6, 9),    // /
-    sprite(0, 9, 6, 9),     // 0
-    sprite(6, 9, 6, 9),     // 1
-    sprite(12, 9, 6, 9),    // 2
-    sprite(18, 9, 6, 9),    // 3
-    sprite(24, 9, 6, 9),    // 4
-    sprite(30, 9, 6, 9),    // 5
-    sprite(36, 9, 6, 9),    // 6
-    sprite(42, 9, 6, 9),    // 7
-    sprite(48, 9, 6, 9),    // 8
-    sprite(54, 9, 6, 9),    // 9
-    sprite(60, 9, 2, 9),    // :
-    sprite(66, 9, 3, 9),    // ;
-    sprite(72, 9, 6, 9),    // <
-    sprite(78, 9, 6, 9),    // =
-    sprite(84, 9, 6, 9),    // >
-    sprite(90, 9, 6, 9),    // ?
-    sprite(0, 18, 6, 9),    // @
-    sprite(6, 18, 6, 9),    // A
-    sprite(12, 18, 6, 9),   // B
-    sprite(18, 18, 6, 9),   // C
-    sprite(24, 18, 6, 9),   // D
-    sprite(30, 18, 6, 9),   // E
-    sprite(36, 18, 6, 9),   // F
-    sprite(42, 18, 6, 9),   // G
-    sprite(48, 18, 6, 9),   // H
-    sprite(54, 18, 4, 9),   // I
-    sprite(60, 18, 5, 9),   // J
-    sprite(66, 18, 6, 9),   // K
-    sprite(72, 18, 6, 9),   // L
-    sprite(78, 18, 6, 9),   // M
-    sprite(84, 18, 6, 9),   // N
-    sprite(90, 18, 6, 9),   // O
-    sprite(0, 27, 6, 9),    // P
-    sprite(6, 27, 6, 9),    // Q
-    sprite(12, 27, 6, 9),   // R
-    sprite(18, 27, 6, 9),   // S
-    sprite(24, 27, 6, 9),   // T
-    sprite(30, 27, 6, 9),   // U
-    sprite(36, 27, 6, 9),   // V
-    sprite(42, 27, 6, 9),   // W
-    sprite(48, 27, 6, 9),   // X
-    sprite(54, 27, 6, 9),   // Y
-    sprite(60, 27, 6, 9),   // Z
-    sprite(66, 27, 3, 9),   // [
-    sprite(72, 27, 6, 9),   // Backslash
-    sprite(78, 27, 3, 9),   // ]
-    sprite(84, 27, 4, 9),   // ^
-    sprite(90, 27, 6, 9),   // _
-    sprite(0, 36, 3, 9),    // `
-    sprite(6, 36, 6, 9),    // a
-    sprite(12, 36, 6, 9),   // b
-    sprite(18, 36, 6, 9),   // c
-    sprite(24, 36, 6, 9),   // d
-    sprite(30, 36, 6, 9),   // e
-    sprite(36, 36, 5, 9),   // f
-    sprite(42, 36, 6, 9),   // g
-    sprite(48, 36, 5, 9),   // h
-    sprite(54, 36, 2, 9),   // i
-    sprite(60, 36, 4, 9),   // j
-    sprite(66, 36, 5, 9),   // k
-    sprite(72, 36, 2, 9),   // l
-    sprite(78, 36, 6, 9),   // m
-    sprite(84, 36, 5, 9),   // n
-    sprite(90, 36, 6, 9),   // o
-    sprite(0, 45, 6, 9),    // p
-    sprite(6, 45, 6, 9),    // q
-    sprite(12, 45, 6, 9),   // r
-    sprite(18, 45, 6, 9),   // s
-    sprite(24, 45, 5, 9),   // t
-    sprite(30, 45, 5, 9),   // u
-    sprite(36, 45, 6, 9),   // v
-    sprite(42, 45, 6, 9),   // w
-    sprite(48, 45, 6, 9),   // x
-    sprite(54, 45, 6, 9),   // y
-    sprite(60, 45, 5, 9),   // z
-    sprite(66, 45, 4, 9),   // {
-    sprite(72, 45, 2, 9),   // |
-    sprite(78, 45, 4, 9),   // }
-    sprite(84, 45, 6, 9),   // ~
-    sprite(90, 45, 6, 9),   // Invalid character
-    sprite(0, 54, 6, 9),    // 0x80
-    sprite(6, 54, 6, 9),    // 0x81
-    sprite(12, 54, 4, 9),   // 0x82
-    sprite(18, 54, 4, 9),   // 0x83
-    sprite(24, 54, 6, 9),   // 0x84
-    sprite(30, 54, 6, 9),   // 0x85
-    sprite(36, 54, 6, 9),   // 0x86
-    sprite(42, 54, 6, 9),   // 0x87
-    sprite(0, 63, 7, 9),    // 0x88
-    sprite(12, 63, 7, 9),   // 0x89
-    sprite(24, 63, 9, 9),   // 0x8a
-    sprite(36, 63, 8, 10),  // 0x8b
-    sprite(48, 63, 11, 10), // 0x8c
-    sprite(60, 63, 12, 10), // 0x8d
-    sprite(72, 63, 14, 9),  // 0x8e
-    sprite(0, 73, 10, 10),  // 0x8f: file icon
-    sprite(12, 73, 10, 10), // 0x90: square button
-    sprite(24, 73, 10, 10), // 0x91: X button
-    sprite(36, 73, 10, 9),  // 0x92: folder icon
-    sprite(48, 73, 10, 9),  // 0x93
-    sprite(60, 73, 10, 10), // 0x94
-    sprite(72, 73, 10, 10), // 0x95
-    sprite(85, 73, 8, 8),   // 0x96: start button
-];
-
 static SCROLL_SINE_TABLE: [i8; 64] = [
     0, 12, 25, 37, 49, 60, 71, 81, //
     90, 98, 106, 112, 117, 122, 125, 126, //
@@ -250,14 +119,6 @@ const CREDITS: &[u8] = b"Well here it is the PicosStation/Plus Credits.... Huge 
 static DMA_CHAINS: StaticCell<[DmaChain; 2]> = StaticCell::new([const { DmaChain::new() }; 2]);
 static FILES: StaticCell<FileManager> = StaticCell::new(FileManager::new());
 
-fn font_sprite(ch: u8) -> &'static SpriteInfo {
-    let index = (ch as usize).wrapping_sub(FONT_FIRST_TABLE_CHAR as usize);
-
-    FONT_SPRITES
-        .get(index)
-        .unwrap_or(&FONT_SPRITES[(FONT_INVALID_CHAR - FONT_FIRST_TABLE_CHAR) as usize])
-}
-
 fn send_command(command: u8, argument: u16) {
     let test = [
         CDROM_TEST_DSP_CMD,
@@ -269,69 +130,13 @@ fn send_command(command: u8, argument: u16) {
     issue_cdrom_command(CDROM_CMD_TEST, &test);
 }
 
-fn draw_char(chain: &mut DmaChain, font: &TextureInfo, x: i32, y: i32, sprite: &SpriteInfo) {
-    // Blending makes semitransparent pixels in the font render correctly.
-    let packet = chain.allocate_packet::<4>();
-
-    packet[0] = gp0_rectangle(true, true, true);
-    packet[1] = gp0_xy(x, y);
-    packet[2] = gp0_uv(
-        font.u as u32 + sprite.x as u32,
-        font.v as u32 + sprite.y as u32,
-        font.clut,
-    );
-    packet[3] = gp0_xy(sprite.width as i32, sprite.height as i32);
-}
-
-fn print_string(chain: &mut DmaChain, font: &TextureInfo, x: i32, y: i32, text: &[u8]) {
-    let mut current_x = x;
-    let mut current_y = y;
-
-    chain.allocate_packet::<1>()[0] = gp0_texpage(font.page, false, false);
-
-    for &byte in until_nul(text) {
-        let ch = match byte {
-            b'\t' => {
-                current_x += FONT_TAB_WIDTH - 1;
-                current_x -= current_x % FONT_TAB_WIDTH;
-                continue;
-            }
-            b'\n' => {
-                current_x = x;
-                current_y += FONT_LINE_HEIGHT;
-                continue;
-            }
-            b' ' => {
-                current_x += FONT_SPACE_WIDTH;
-                continue;
-            }
-            0x99.. => FONT_INVALID_CHAR,
-            _ => byte,
-        };
-        let sprite = font_sprite(ch);
-
-        draw_char(chain, font, current_x, current_y, sprite);
-        current_x += sprite.width as i32;
-    }
-}
-
-/// Draws a sprite stretched to the given size, which may be negative to
+/// Draws a texture stretched to the given size, which may be negative to
 /// mirror it.
-#[allow(clippy::too_many_arguments)]
-fn draw_scaled(
-    chain: &mut DmaChain,
-    texture: &TextureInfo,
-    sprite: &SpriteInfo,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    blend: bool,
-) {
-    let u = sprite.x as u32;
-    let v = sprite.y as u32;
-    let u2 = u + sprite.width as u32;
-    let v2 = v + sprite.height as u32;
+fn draw_scaled(chain: &mut DmaChain, texture: &TextureInfo, x: i32, y: i32, w: i32, h: i32) {
+    let u = texture.u as u32;
+    let v = texture.v as u32;
+    let u2 = u + texture.width as u32;
+    let v2 = v + texture.height as u32;
     let x2 = x + w;
     let y2 = y + h;
 
@@ -339,7 +144,7 @@ fn draw_scaled(
 
     let packet = chain.allocate_packet::<9>();
 
-    packet[0] = gp0_quad(true, blend);
+    packet[0] = gp0_quad(true, true);
     packet[1] = gp0_xy(x, y);
     packet[2] = gp0_uv(u, v, texture.clut);
     packet[3] = gp0_xy(x2, y);
@@ -348,6 +153,19 @@ fn draw_scaled(
     packet[6] = gp0_uv(u, v2, 0);
     packet[7] = gp0_xy(x2, y2);
     packet[8] = gp0_uv(u2, v2, 0);
+}
+
+fn draw_logo(chain: &mut DmaChain, logo: &TextureInfo) {
+    let width = LOGO_WIDTH * LOGO_SCALE;
+
+    draw_scaled(
+        chain,
+        logo,
+        (SCREEN_WIDTH - width) / 2,
+        LOGO_Y,
+        width,
+        LOGO_HEIGHT * LOGO_SCALE,
+    );
 }
 
 /// The logo spinning around its vertical axis on the credits screen.
@@ -365,23 +183,15 @@ impl LogoSpin {
             self.delay = 0;
         }
 
-        let logo_width = (logo.width as i32 * SCROLL_SINE_TABLE[self.sine_offset] as i32) / 127;
-        let sprite = SpriteInfo {
-            x: logo.u,
-            y: logo.v,
-            width: logo.width as u8,
-            height: logo.height as u8,
-        };
+        let width = (LOGO_WIDTH * LOGO_SCALE * SCROLL_SINE_TABLE[self.sine_offset] as i32) / 127;
 
         draw_scaled(
             chain,
             logo,
-            &sprite,
-            (SCREEN_WIDTH - logo_width) / 2,
-            10,
-            logo_width,
-            logo.height as i32,
-            true,
+            (SCREEN_WIDTH - width) / 2,
+            LOGO_Y,
+            width,
+            LOGO_HEIGHT * LOGO_SCALE,
         );
     }
 }
@@ -396,30 +206,26 @@ struct Scroller {
 }
 
 impl Scroller {
-    fn char_width(ch: u8) -> i32 {
-        if ch == b' ' {
-            FONT_SPACE_WIDTH
-        } else {
-            font_sprite(ch).width as i32
-        }
-    }
+    /// Pixels scrolled per frame, a divisor of the character width.
+    const SPEED: i32 = 2;
+    const AMPLITUDE: i32 = 40;
 
-    fn print(&mut self, chain: &mut DmaChain, font: &TextureInfo, x: i32, y: i32, text: &[u8]) {
+    fn print(&mut self, chain: &mut DmaChain, font: &Font, x: i32, y: i32, text: &[u8]) {
         let mut current_x = x;
         let mut scroll_index = 0;
         let mut offset = 0;
 
-        chain.allocate_packet::<1>()[0] = gp0_texpage(font.page, false, false);
+        font.select(chain);
 
-        self.x_ofs += 1;
-        if self.x_ofs >= Self::char_width(text[self.string_offset]) {
+        self.x_ofs += Self::SPEED;
+        if self.x_ofs >= Font::advance(text[self.string_offset]) {
             self.string_offset = (self.string_offset + 1) % text.len();
             self.x_ofs = 0;
         }
 
         loop {
-            let current_y =
-                y + (SCROLL_SINE_TABLE[(scroll_index + self.sine_offset) % 64] as i32 * 20) / 128;
+            let wave = SCROLL_SINE_TABLE[(scroll_index + self.sine_offset) % 64] as i32;
+            let current_y = y + (wave * Self::AMPLITUDE) / 128;
 
             scroll_index = (scroll_index + 1) % 64;
 
@@ -432,16 +238,7 @@ impl Scroller {
             let ch = text[(offset + self.string_offset) % text.len()];
 
             offset += 1;
-
-            if ch == b' ' {
-                current_x += FONT_SPACE_WIDTH;
-                continue;
-            }
-
-            let sprite = font_sprite(ch);
-
-            draw_char(chain, font, current_x - self.x_ofs, current_y, sprite);
-            current_x += sprite.width as i32;
+            current_x += font.draw_char(chain, current_x - self.x_ofs, current_y, ch);
 
             if current_x - self.x_ofs > SCREEN_WIDTH {
                 break;
@@ -571,41 +368,37 @@ fn main() -> ! {
 
     let mut current_command = MenuCommand::GotoRoot;
 
-    if GPU_GP1.read() & GP1_STAT_FB_MODE_BITMASK == GP1_STAT_FB_MODE_PAL {
-        setup_gpu(Gp1VideoMode::Pal, SCREEN_WIDTH, SCREEN_HEIGHT);
-    } else {
-        setup_gpu(Gp1VideoMode::Ntsc, SCREEN_WIDTH, SCREEN_HEIGHT);
-    }
+    let display = setup_gpu(bios_is_pal());
 
     DMA_DPCR.set_bits(dma_dpcr_ch_enable(DMA_GPU));
 
     GPU_GP1.write(gp1_dma_request_mode(GP1_DREQ_GP0_WRITE));
+    // VRAM still holds the BIOS logo and its textures. The scaled logo can
+    // sample a texel past its edges, so the textures sit in transparent black.
+    fill_vram(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BACKGROUND_COLOR);
+    fill_vram(
+        SCREEN_WIDTH,
+        0,
+        VRAM_WIDTH - SCREEN_WIDTH,
+        TEXTURE_AREA_HEIGHT,
+        0,
+    );
     GPU_GP1.write(gp1_disp_blank(false));
 
-    let font = upload_indexed_texture(
-        &FONT_TEXTURE.0,
-        &FONT_PALETTE.0,
-        SCREEN_WIDTH * 2,
-        0,
-        SCREEN_WIDTH * 2,
-        FONT_HEIGHT,
-        FONT_WIDTH,
-        FONT_HEIGHT,
-        GP0_COLOR_4BPP,
-    );
+    let font = Font::new();
     let logo = upload_indexed_texture(
         &LOGO_TEXTURE.0,
         &LOGO_PALETTE.0,
-        SCREEN_WIDTH * 2,
-        FONT_WIDTH,
-        SCREEN_WIDTH * 2,
-        TEXTURE_HEIGHT + FONT_WIDTH * 2,
-        TEXTURE_WIDTH,
-        TEXTURE_HEIGHT,
+        SCREEN_WIDTH,
+        0,
+        SCREEN_WIDTH,
+        LOGO_PALETTE_Y,
+        LOGO_WIDTH,
+        LOGO_HEIGHT,
         GP0_COLOR_4BPP,
     );
 
-    let mut using_second_frame = false;
+    let mut using_second_chain = false;
     let mut sector_buffer = Aligned([0u8; 2340]);
 
     let mut highlight: u8 = 0;
@@ -619,37 +412,26 @@ fn main() -> ! {
     let mut previous_buttons = get_button_press(0);
 
     loop {
-        let buffer_x = if using_second_frame { SCREEN_WIDTH } else { 0 };
-        let buffer_y = 0;
-
-        let chain = &mut chains[using_second_frame as usize];
-        using_second_frame = !using_second_frame;
-
-        GPU_GP1.write(gp1_fb_offset(buffer_x as u32, buffer_y as u32));
+        // The chains alternate so one can be built while the GPU reads the
+        // other.
+        let chain = &mut chains[using_second_chain as usize];
+        using_second_chain = !using_second_chain;
 
         chain.reset();
 
         let packet = chain.allocate_packet::<4>();
         packet[0] = gp0_texpage(0, true, false);
-        packet[1] = gp0_fb_offset1(buffer_x as u32, buffer_y as u32);
-        packet[2] = gp0_fb_offset2(
-            (buffer_x + SCREEN_WIDTH - 1) as u32,
-            (buffer_y + SCREEN_HEIGHT - 2) as u32,
-        );
-        packet[3] = gp0_fb_origin(buffer_x, buffer_y);
+        packet[1] = gp0_fb_offset1(0, 0);
+        packet[2] = gp0_fb_offset2((SCREEN_WIDTH - 1) as u32, (SCREEN_HEIGHT - 1) as u32);
+        packet[3] = gp0_fb_origin(0, 0);
 
         let packet = chain.allocate_packet::<3>();
-        packet[0] = gp0_rgb(64, 64, 64) | gp0_vram_fill();
-        packet[1] = gp0_xy(buffer_x, buffer_y);
+        packet[0] = BACKGROUND_COLOR | gp0_vram_fill();
+        packet[1] = gp0_xy(0, 0);
         packet[2] = gp0_xy(SCREEN_WIDTH, SCREEN_HEIGHT);
 
         if !credits_menu {
-            let packet = chain.allocate_packet::<5>();
-            packet[0] = gp0_texpage(logo.page, false, false);
-            packet[1] = gp0_rectangle(true, true, true);
-            packet[2] = gp0_xy(96, 10);
-            packet[3] = gp0_uv(logo.u as u32, logo.v as u32, logo.clut);
-            packet[4] = gp0_xy(logo.width as i32, logo.height as i32);
+            draw_logo(chain, &logo);
         } else {
             logo_spin.draw(chain, &logo);
         }
@@ -754,14 +536,14 @@ fn main() -> ! {
             }
 
             if current_command != MenuCommand::None {
-                print_string(chain, &font, 40, 40, b"Please Wait Loading...");
+                font.print(chain, MESSAGE_X, LIST_Y, b"Please Wait Loading...");
             } else {
                 let mut counter = TextBuffer::<32>::new();
 
                 counter.push_decimal(selected_index as u32 + 1);
                 counter.push_bytes(b" of ");
                 counter.push_decimal(file_entry_count);
-                print_string(chain, &font, 16, 16, counter.as_bytes());
+                font.print(chain, MARGIN_X, COUNTER_Y, counter.as_bytes());
 
                 let count = file_entry_count as i32;
                 let page_size = PAGE_SIZE as i32;
@@ -779,14 +561,16 @@ fn main() -> ! {
                     for i in 0..item_count {
                         let index = (start + i) as u32;
 
+                        let y = LIST_Y + i * LINE_HEIGHT;
+
                         if index == selected_index as u32 {
                             let color = highlight + 48;
                             let packet = chain.allocate_packet::<3>();
 
                             packet[0] =
                                 gp0_rgb(color, color, color) | gp0_rectangle(false, false, false);
-                            packet[1] = gp0_xy(0, 32 + i * 11);
-                            packet[2] = gp0_xy(SCREEN_WIDTH, 12);
+                            packet[1] = gp0_xy(0, y);
+                            packet[2] = gp0_xy(SCREEN_WIDTH, LINE_HEIGHT);
                         }
 
                         let Some(file) = files.get_file_data(index as u16) else {
@@ -796,42 +580,48 @@ fn main() -> ! {
 
                         line.push_decimal_left(index + 1, 4);
                         line.push(b' ');
-                        line.push(if file.flag == 0 { 0x8f } else { 0x92 });
+                        line.push(if file.flag == 0 {
+                            ICON_DISC
+                        } else {
+                            ICON_FOLDER
+                        });
                         line.push(b' ');
                         line.push_bytes(file.filename());
-                        line.push(b'\n');
-                        print_string(chain, &font, 16, 34 + i * 11, line.as_bytes());
+                        font.print(chain, MARGIN_X, y, line.as_bytes());
                     }
                 } else {
-                    print_string(chain, &font, 40, 40, b"Empty Folder");
+                    font.print(chain, MESSAGE_X, LIST_Y, b"Empty Folder");
                 }
 
-                print_string(
+                font.print(
                     chain,
-                    &font,
-                    12,
-                    212,
+                    FOOTER_X,
+                    FOOTER_Y,
                     b"\x91 Select / Fast Boot, \x96 Regular Boot, \x90 Parent Folder",
                 );
 
                 highlight = (highlight + 1) & 0x3f;
             }
         } else {
-            print_string(
+            font.print(
                 chain,
-                &font,
-                40,
-                40,
+                MESSAGE_X,
+                CREDITS_TITLE_Y,
                 b"PicosStation/Plus Menu Alpha Release",
             );
-            credits_scroll.print(chain, &font, 0, 120, CREDITS);
+            credits_scroll.print(chain, &font, 0, CREDITS_SCROLL_Y, CREDITS);
         }
 
         previous_buttons = buttons;
         chain.end();
-        wait_for_gp0_ready();
-        wait_for_vblank();
-        send_linked_list(chain);
+        display.present(chain);
+
+        // The command may keep the menu from drawing for a while.
+        if current_command != MenuCommand::None {
+            display.present(chain);
+            wait_for_dma_done();
+            wait_for_gp0_ready();
+        }
 
         match current_command {
             MenuCommand::None => {}
